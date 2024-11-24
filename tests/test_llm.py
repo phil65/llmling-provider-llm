@@ -146,14 +146,15 @@ async def test_streaming_cancellation(model_id: str) -> None:
     messages = [Message(role="user", content=msg)]
     chunks_received = 0
 
-    # Get just a few chunks then break
-    async for chunk in provider_instance.complete_stream(messages):
-        chunks_received += 1
-        if chunks_received >= 5:  # noqa: PLR2004
-            break
-
-    # Clean up any pending callbacks
-    await asyncio.sleep(0)
+    try:
+        # Get just a few chunks then break
+        async for _chunk in provider_instance.complete_stream(messages):
+            chunks_received += 1
+            if chunks_received >= 5:  # noqa: PLR2004
+                break
+    finally:
+        # Let the event loop process any pending callbacks
+        await asyncio.sleep(0.1)
 
     assert chunks_received >= 1
 

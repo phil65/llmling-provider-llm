@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Protocol
 
 from llmling.core import capabilities, exceptions
@@ -10,8 +11,6 @@ from llmling.core.log import get_logger
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     import llm
     from llm.models import AsyncModel, Model, Response
 
@@ -235,8 +234,15 @@ async def complete(
             **kwargs,
         )
 
-        # Get text content (handles both sync and async responses)
-        content = await response.text()
+        # Handle different response types
+        if isinstance(response, AsyncIterator):
+            # Collect all chunks for non-streaming response
+            content = ""
+            async for chunk in response:
+                content += chunk
+        else:
+            # Regular response object
+            content = await response.text()
 
         return {
             "choices": [{"message": {"content": content}}],
