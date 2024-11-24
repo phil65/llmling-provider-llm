@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from llmling.core import capabilities, exceptions
 from llmling.core.log import get_logger
@@ -12,27 +12,77 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     import llm
-    from llm.models import AsyncModel
+    from llm.models import AsyncModel, Model, Response
 
 
 logger = get_logger(__name__)
 
 # Cache for model instances and capabilities
-_model_cache: dict[str, AsyncModel] = {}
+_model_cache: dict[str, AsyncModelProtocol] = {}
 _capabilities_cache: dict[str, capabilities.Capabilities] = {}
 
 
-def _get_cached_model(model_id: str) -> AsyncModel:
-    """Get or create cached async model instance."""
+class AsyncModelProtocol(Protocol):
+    """Protocol defining the required async model interface."""
+
+    model_id: str
+
+    async def prompt(
+        self,
+        prompt: str,
+        system: str | None = None,
+        attachments: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> Response | AsyncIterator[str]: ...
+
+
+def _get_cached_model(model_id: str) -> AsyncModelProtocol:
+    """Get or create cached model instance, falling back to sync if needed."""
     import llm
 
     if model_id not in _model_cache:
         try:
+            # First try to get an async model
             _model_cache[model_id] = llm.get_async_model(model_id)
-        except llm.UnknownModelError as exc:
-            msg = f"Model {model_id} not found"
-            raise exceptions.LLMError(msg) from exc
+        except Exception as exc:
+            # If async model isn't available, try sync model
+            logger.debug("Falling back to sync model for %s: %s", model_id, exc)
+            try:
+                sync_model = llm.get_model(model_id)
+                _model_cache[model_id] = SyncModelAdapter(sync_model)
+            except llm.UnknownModelError as model_exc:
+                msg = f"Model {model_id} not found"
+                raise exceptions.LLMError(msg) from model_exc
     return _model_cache[model_id]
+
+
+class SyncModelAdapter:
+    """Adapter to make sync models behave like async models."""
+
+    def __init__(self, model: Model) -> None:
+        """Initialize the adapter with a sync model."""
+        self.model = model
+        self.model_id = model.model_id
+
+    async def prompt(
+        self,
+        prompt: str,
+        system: str | None = None,
+        attachments: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> Response:
+        """Execute the prompt asynchronously by wrapping the sync model."""
+        # Ignore streaming flag - sync models don't support true streaming
+        kwargs.pop("stream", None)
+
+        # Run the sync prompt in a thread and return the complete response
+        return await asyncio.to_thread(
+            self.model.prompt,
+            prompt,
+            system=system,
+            attachments=attachments,
+            **kwargs,
+        )
 
 
 def _detect_model_capabilities(model: AsyncModel) -> capabilities.Capabilities:
@@ -168,7 +218,7 @@ async def stream(
     messages: list[dict[str, Any]],
     **kwargs: Any,
 ) -> AsyncIterator[Any]:
-    """Stream completions."""
+    """Stream completions, falling back to single response for sync models."""
     try:
         model = _get_cached_model(model_id)
 
@@ -189,14 +239,25 @@ async def stream(
             f"{msg['role'].title()}: {msg['content']}" for msg in clean_messages
         )
 
-        # Stream response
         response = await model.prompt(
             prompt,
             system=system_prompt,
             attachments=attachments or None,
+            stream=True,
             **kwargs,
         )
+        import llm
 
+        # If we got a Response object (sync model), yield it as one chunk
+        if isinstance(response, llm.Response):
+            content = await asyncio.to_thread(response.text)
+            yield {
+                "choices": [{"delta": {"content": content}}],
+                "model": model_id,
+            }
+            return
+
+        # Otherwise handle streaming as before
         async for chunk in response:
             yield {
                 "choices": [{"delta": {"content": chunk}}],
