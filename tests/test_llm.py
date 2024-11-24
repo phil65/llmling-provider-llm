@@ -65,7 +65,7 @@ async def test_streaming_completion(test_provider: provider.LLMLibProvider) -> N
         Message(role="user", content="Count from 1 to 3."),
     ]
 
-    chunks = []
+    chunks: list[str] = []
     async for chunk in test_provider.complete_stream(messages):
         assert chunk.content is not None
         chunks.append(chunk.content)
@@ -81,19 +81,10 @@ async def test_vision_capability(
     """Test vision capabilities if supported."""
     if not test_provider._capabilities.supports_vision:
         pytest.skip("Vision capabilities not supported by this model")
-
-    content_item = MessageContent(
-        type="image_url",
-        content="https://example.com/test.jpg",
-        alt_text="A test image",
-    )
-
-    message = Message(
-        role="user",
-        content="What's in this image?",
-        content_items=[content_item],
-    )
-
+    url = "https://example.com/test.jpg"
+    content_item = MessageContent(type="image_url", content=url, alt_text="A test image")
+    items = [content_item]
+    message = Message(role="user", content="What's in this image?", content_items=items)
     result = await test_provider.complete([message])
     assert result.content is not None
     assert len(result.content) > 0
@@ -103,9 +94,7 @@ def test_message_preparation(test_provider: provider.LLMLibProvider) -> None:
     """Test message preparation logic."""
     url = "https://example.com/test.jpg"
     content = MessageContent(type="image_url", content=url, alt_text="Test image")
-    messages = [
-        Message(role="user", content="Test message", content_items=[content]),
-    ]
+    messages = [Message(role="user", content="Test message", content_items=[content])]
     prepared = test_provider._prepare_messages(messages)
 
     assert len(prepared) == 1
