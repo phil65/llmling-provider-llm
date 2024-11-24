@@ -3,35 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 from llmling.core import exceptions
 from llmling.llm.base import LLMConfig, Message, MessageContent
 import pytest
 
 from llmling_provider_llm import client, provider
-
-
-# Define test models
-TEST_MODELS = ["smollm2:135m"] if os.getenv("CI") else ["smollm2:135m", "gpt-3.5-turbo"]
-
-
-@pytest.fixture(params=TEST_MODELS)
-def model_id(request: pytest.FixtureRequest) -> str:
-    """Return a test model ID."""
-    return request.param
-
-
-@pytest.fixture
-def test_config(model_id: str) -> LLMConfig:
-    """Create a test LLM configuration."""
-    return LLMConfig(model=model_id, temperature=0.7, max_tokens=1000)
-
-
-@pytest.fixture
-def test_provider(test_config: LLMConfig) -> provider.LLMLibProvider:
-    """Create a test provider instance."""
-    return provider.LLMLibProvider(test_config)
+from tests.conftest import TEST_MODELS
 
 
 @pytest.mark.asyncio
@@ -81,6 +59,7 @@ async def test_vision_capability(
     """Test vision capabilities if supported."""
     if not test_provider._capabilities.supports_vision:
         pytest.skip("Vision capabilities not supported by this model")
+
     url = "https://example.com/test.jpg"
     content_item = MessageContent(type="image_url", content=url, alt_text="A test image")
     items = [content_item]
@@ -136,13 +115,11 @@ async def test_streaming_cancellation(model_id: str) -> None:
     chunks_received = 0
 
     try:
-        # Get just a few chunks then break
         async for _chunk in provider_instance.complete_stream(messages):
             chunks_received += 1
             if chunks_received >= 5:  # noqa: PLR2004
                 break
     finally:
-        # Let the event loop process any pending callbacks
         await asyncio.sleep(0.1)
 
     assert chunks_received >= 1
@@ -157,7 +134,6 @@ async def test_concurrent_requests(model_id: str) -> None:
 
     messages = [Message(role="user", content="Say 'hello'")]
     num_requests = 3
-    # Run multiple completions concurrently
     results = await asyncio.gather(*[
         provider_instance.complete(messages) for _ in range(num_requests)
     ])
