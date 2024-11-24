@@ -16,7 +16,8 @@ from llmling.llm.base import (
     MessageContent,
     ToolCall,
 )
-from llmling.llm.clients import libllmclient
+
+from llmling_provider_llm import client
 
 
 if TYPE_CHECKING:
@@ -34,13 +35,16 @@ class LLMLibProvider(LLMProvider):
     def __init__(self, config: LLMConfig) -> None:
         """Initialize provider with configuration."""
         super().__init__(config)
+        if not config.model:
+            msg = "Model ID cannot be empty"
+            raise ValueError(msg)
         self._capabilities = self._get_capabilities()
         msg = "Initialized LLMLib provider for model %s with capabilities: %s"
         logger.debug(msg, config.model, self._capabilities)
 
     def _get_capabilities(self) -> capabilities.Capabilities:
         """Get model capabilities."""
-        return libllmclient.get_model_info(self.config.model)
+        return client.get_model_info(self.config.model)
 
     def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
         """Convert messages to llm library format."""
@@ -86,7 +90,7 @@ class LLMLibProvider(LLMProvider):
         """Generate a completion for the messages."""
         try:
             dct = self._prepare_messages(messages)
-            response = await libllmclient.complete(self.config.model, dct, **kwargs)
+            response = await client.complete(self.config.model, dct, **kwargs)
             # Extract usage information
             usage = response.get("usage", {})
             return CompletionResult(
@@ -113,7 +117,7 @@ class LLMLibProvider(LLMProvider):
         try:
             messages_dict = self._prepare_messages(messages)
 
-            async for chunk in libllmclient.stream(
+            async for chunk in client.stream(
                 self.config.model,
                 messages_dict,
                 **kwargs,

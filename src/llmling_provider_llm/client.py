@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Protocol
 
 from llmling.core import capabilities, exceptions
@@ -44,7 +45,7 @@ def _get_cached_model(model_id: str) -> AsyncModelProtocol:
         try:
             # First try to get an async model
             _model_cache[model_id] = llm.get_async_model(model_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # If async model isn't available, try sync model
             logger.debug("Falling back to sync model for %s: %s", model_id, exc)
             try:
@@ -70,19 +71,55 @@ class SyncModelAdapter:
         system: str | None = None,
         attachments: list[Any] | None = None,
         **kwargs: Any,
-    ) -> Response:
+    ) -> DummyResponse:  # Note: Always return DummyResponse
         """Execute the prompt asynchronously by wrapping the sync model."""
         # Ignore streaming flag - sync models don't support true streaming
         kwargs.pop("stream", None)
 
-        # Run the sync prompt in a thread and return the complete response
-        return await asyncio.to_thread(
+        # Run the sync prompt in a thread
+        response = await asyncio.to_thread(
             self.model.prompt,
             prompt,
             system=system,
             attachments=attachments,
             **kwargs,
         )
+
+        # Handle both string and Response objects
+        if isinstance(response, str):
+            return DummyResponse(response)
+
+        # If it's a Response object, get its text and wrap it
+        content = response.text() if callable(response.text) else response.text
+        return DummyResponse(content)
+
+
+class DummyResponse:
+    """Simple Response-like object for string outputs."""
+
+    def __init__(self, content: str) -> None:
+        """Initialize with content string."""
+        self._content = content
+        # Add basic token counting (optional)
+        self.prompt_tokens = 0
+        self.completion_tokens = len(content.split())
+        self.total_tokens = self.completion_tokens
+        self._iterator_used = False
+
+    async def text(self) -> str:
+        """Return the content string (as async method)."""
+        return self._content
+
+    def __aiter__(self) -> DummyResponse:
+        """Make this class async iterable."""
+        return self
+
+    async def __anext__(self) -> str:
+        """Yield the entire content as a single chunk."""
+        if self._iterator_used:
+            raise StopAsyncIteration
+        self._iterator_used = True
+        return self._content
 
 
 def _detect_model_capabilities(model: AsyncModel) -> capabilities.Capabilities:
@@ -198,8 +235,11 @@ async def complete(
             **kwargs,
         )
 
+        # Get text content (handles both sync and async responses)
+        content = await response.text()
+
         return {
-            "choices": [{"message": {"content": await response.text()}}],
+            "choices": [{"message": {"content": content}}],
             "model": model_id,
             "usage": {
                 "prompt_tokens": getattr(response, "prompt_tokens", 0),
@@ -246,18 +286,8 @@ async def stream(
             stream=True,
             **kwargs,
         )
-        import llm
 
-        # If we got a Response object (sync model), yield it as one chunk
-        if isinstance(response, llm.Response):
-            content = await asyncio.to_thread(response.text)
-            yield {
-                "choices": [{"delta": {"content": content}}],
-                "model": model_id,
-            }
-            return
-
-        # Otherwise handle streaming as before
+        # Handle any kind of response as an async iterator
         async for chunk in response:
             yield {
                 "choices": [{"delta": {"content": chunk}}],
